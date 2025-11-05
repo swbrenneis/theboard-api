@@ -79,8 +79,8 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql_psycopg2',
         'NAME': 'theboard',
         'USER': 'theboard',
-        'PASSWORD': '8K4BARmEVbwwjyNu',
-        'HOST': 'localhost',
+        'PASSWORD': 'L8bNmAANg8adtAQtCSbx',
+        'HOST': 'the-board-pg.cluster-choy9hztxz4m.us-east-1.rds.amazonaws.com',
         'PORT': '',
     }
 }
