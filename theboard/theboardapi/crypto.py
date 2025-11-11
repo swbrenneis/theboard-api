@@ -1,12 +1,13 @@
 import string
 import base64
 
+from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
-from Crypto.Random import random
+from Crypto.Random import random, get_random_bytes
 from Crypto.PublicKey import ECC, RSA
 from Crypto.Signature import DSS
 
-from models import TheBoardMember
+from .models import TheBoardMember
 from .exceptions.InvalidSignature import InvalidSignature
 
 
@@ -36,9 +37,9 @@ def generate_member(screen_name):
     member = TheBoardMember()
     member.screen_name = screen_name
 
-    # TODO encrypt password
     passphrase = generate_passphrase()
-    member.passphrase = passphrase
+    ciphertext, nonce = encrypt_message(passphrase)
+    member.passphrase = f'{"ciphertext":{ciphertext}, "nonce":{nonce}}'
 
     signing_key = generate_signing_key(passphrase)
     member.signing_key = signing_key.decode('utf-8')
@@ -46,7 +47,7 @@ def generate_member(screen_name):
     encryption_key = generate_encryption_key(passphrase)
     member.encryption_key = encryption_key.decode('utf-8')
 
-    return member
+    return member, passphrase
 
 def get_ecc_publicKey(pem, passphrase):
     """ Returns the ECC public key derived from the ECDSA private key"""
@@ -102,3 +103,37 @@ def sign_message(private_key_pem, passphrase, fields):
     signer = DSS.new(private_key, 'fips-186-3')
     signed = signer.sign(h)
     return base64.b64encode(signed)
+
+
+def encrypt_message(message):
+    """
+    Encrypt a message using AES 256 GCM
+    :param message: The message to encrypt
+    :type message: str
+    :return The encrypted message and the cipher IV (nonce), both base64 encoded
+    :rtype: (str, str)
+    """
+    with open('/opt/theboard/secrets/aes_key', 'rb') as f:
+        lines = f.readlines()
+    key = base64.b64decode(lines[0])
+    nonce = get_random_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(message.encode('utf-8'))
+    return base64.b64encode(ciphertext), base64.b64encode(nonce)
+
+
+def decrypt_message(ciphertext, nonce):
+    """
+    Decrypt a message using AES 256 GCM
+    :param ciphertext: The ciphertext to decrypt, base64 encoded
+    :type ciphertext: str
+    :param nonce: The cipher IV (nonce), base64 encoded
+    :type nonce: str
+    :return The decrypted message
+    :rtype: str
+    """
+    with open('/opt/theboard/secrets/aes_key', 'rb') as f:
+        lines = f.readlines()
+    key = base64.b64decode(lines[0])
+    cipher = AES.new(key, AES.MODE_GCM, nonce=base64.b64decode(nonce))
+    return cipher.decrypt(base64.b64decode(ciphertext)).decode('utf-8')

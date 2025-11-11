@@ -1,6 +1,8 @@
+import json
+
 import requests
 
-from crypto import generate_member, get_ecc_publicKey, validate_signature, sign_message
+from .crypto import generate_member, get_ecc_publicKey, validate_signature, sign_message, decrypt_message
 from .exceptions.ScreenNameInUse import ScreenNameInUse
 from .exceptions.MemberNotFound import MemberNotFound
 from .exceptions.InvalidPassword import InvalidPassword
@@ -24,7 +26,7 @@ class TheBoardBackend:
         :raises ScreenNameInUse: If the screen_name is already registered
         :raises Exception: If there is a problem registering the screen_name
         """
-        member = generate_member(screen_name)
+        member, passphrase = generate_member(screen_name)
         public_key_pem = get_ecc_publicKey(member.signing_key, member.password)
 
         url = f'{self.back_end_host}/register'
@@ -54,14 +56,26 @@ class TheBoardBackend:
             member.enclave_key = registered['enclaveKey']
             member.server_signing_key = server_signing_key_pem
             member.save()
-            return member.passphrase
+            return passphrase
 
     def login(self, screen_name, password):
+        """
+        Log in using the given screen_name and password.
+        :param screen_name: The screen_name to login.
+        :type screen_name: str
+        :param password: The password to use for logging in
+        :type password: str
+        :return: The authentication status and session ID and session key if successful
+        :rtype: dict
+        :raises MemberNotFound: If the member object cannot be found using the screen name
+        """
         member = TheBoardMember.objects.get(pk=screen_name)
         if not member:
             raise MemberNotFound(screen_name)
-        # TODO Handle encrypted password
-        if member.passphrase != password:
+        json_string = member.passphrase
+        encrypted_passphrase = json.loads(json_string)
+        passphrase = decrypt_message(encrypted_passphrase['ciphertext'], encrypted_passphrase['nonce'])
+        if passphrase != password:
             raise InvalidPassword()
 
         # Generate the signature
@@ -93,6 +107,17 @@ class TheBoardBackend:
 
 
     def logout(self, screen_name, session_id):
+        """
+        Logs out the given screen_name and session_id.
+        :param screen_name: The screen_name to logout.
+        :type screen_name: str
+        :param session_id: The session_id to logout.
+        :type session_id: str
+        :return: The original session ID
+        :rtype: dict
+        :raises MemberNotFound: If the member object cannot be found using the screen name
+        :raises Exception: If the session ID provided does not match the session ID from the back end
+        """
         member = TheBoardMember.objects.get(pk=screen_name)
         if not member:
             raise MemberNotFound(screen_name)
@@ -100,11 +125,17 @@ class TheBoardBackend:
         fields = [member.public_id, session_id]
         signature = sign_message(member.signing_key, member.passphrase, fields)
 
-        initiate_logout = {"publicId": member.public_id, "sessionId": session_id}
+        initiate_logout = {"publicId": member.public_id, "sessionId": session_id, "signature": signature}
         url = f'{self.back_end_host}/logout'
         response = requests.post(url, json=initiate_logout)
         # Check for HTTP errors
         response.raise_for_status()
         # Get the response JSON
         logged_out = response.json()
+        fields = [logged_out['sessionId']]
+        validate_signature(member.server_signing_key, fields, logged_out['signature'])
+        if logged_out['sessionId'] != session_id:
+            raise Exception("Session ID mismatch")
+
+        return {'session_id': session_id}
 
