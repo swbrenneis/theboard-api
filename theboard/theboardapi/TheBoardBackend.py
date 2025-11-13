@@ -2,8 +2,9 @@ import json
 
 import requests
 
-from .crypto import generate_member, get_ecc_public_key, validate_signature, sign_message, decrypt_message, \
+from .crypto import generate_member, get_ecc_public_key, sign_message, decrypt_message, \
     get_rsa_public_key
+from .crypto2 import validate_signature
 from .exceptions.ScreenNameInUse import ScreenNameInUse
 from .exceptions.MemberNotFound import MemberNotFound
 from .exceptions.InvalidPassword import InvalidPassword

@@ -82,15 +82,18 @@ def validate_signature(public_key_pem, fields, signature):
     :raises InvalidSignature: If the signature is invalid
     """
     public_key_bytes = public_key_pem.encode('utf-8')
-    public_key = ECC.import_key(public_key_bytes)
-    signature_bytes = base64.b64decode(signature)
+    public_key = ECC.import_key(public_key_pem)
     h = SHA256.new()
     for field in fields:
-        h.update(field)
+        h.update(field.encode('utf-8'))
+    print(f'Hash bytes: {h.hexdigest()}')
     verifier = DSS.new(public_key, 'fips-186-3')
     try:
+        signature_bytes = base64.b64decode(signature)
+        print(f'Signature bytes: {signature_bytes.hex()}')
         verifier.verify(h, signature_bytes)
-    except ValueError:
+    except ValueError as e:
+        print(f'Value error: {e}')
         raise InvalidSignature()
 
 
