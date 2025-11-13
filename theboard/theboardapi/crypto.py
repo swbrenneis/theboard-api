@@ -27,9 +27,9 @@ def generate_signing_key(passphrase):
 def generate_encryption_key(passphrase):
     """ Generates the RSA private key for encryption """
     key = RSA.generate(2048)
-    return key.export_key(pkcs=8, passphrase=passphrase,
+    return key.export_key(pkcs=8, passphrase=passphrase, format='PEM',
                           protection='PBKDF2WithHMAC-SHA512AndAES256-CBC',
-                          prot_params={'iteration_count': 131702})
+                          prot_params={'iteration_count': 131702}).decode('utf-8')
 
 
 def generate_member(screen_name):
@@ -39,22 +39,33 @@ def generate_member(screen_name):
 
     passphrase = generate_passphrase()
     ciphertext, nonce = encrypt_message(passphrase)
-    member.passphrase = f'{"ciphertext":{ciphertext}, "nonce":{nonce}}'
+    member.passphrase = f"{{'ciphertext':'{ciphertext}', 'nonce':'{nonce}'}}"
 
     signing_key = generate_signing_key(passphrase)
-    member.signing_key = signing_key.decode('utf-8')
+    member.signing_key = signing_key
 
     encryption_key = generate_encryption_key(passphrase)
-    member.encryption_key = encryption_key.decode('utf-8')
-
+    member.encryption_key = encryption_key
     return member, passphrase
 
-def get_ecc_publicKey(pem, passphrase):
+def get_ecc_public_key(pem, passphrase):
     """ Returns the ECC public key derived from the ECDSA private key"""
     pem_bytes = pem.encode('UTF-8')
     private_key = ECC.import_key(pem_bytes, passphrase=passphrase)
     public_key = private_key.public_key()
-    return public_key.export_key(format='PEM')
+    pkpem = public_key.export_key(format='PEM')
+#    print(f'EC public key PEM: {pkpem}')
+    return pkpem
+
+
+def get_rsa_public_key(pem, passphrase):
+    """ Returns the RSA public key derived from the RSA private key"""
+    pem_bytes = pem.encode('UTF-8')
+    private_key = RSA.import_key(pem_bytes, passphrase=passphrase)
+    public_key = private_key.public_key()
+    pkpem = public_key.export_key(format='PEM')
+#    print(f'RSA public key PEM: {pkpem}')
+    return pkpem.decode('UTF-8')
 
 
 def validate_signature(public_key_pem, fields, signature):
@@ -113,13 +124,13 @@ def encrypt_message(message):
     :return The encrypted message and the cipher IV (nonce), both base64 encoded
     :rtype: (str, str)
     """
-    with open('/opt/theboard/secrets/aes_key', 'rb') as f:
+    with open('/opt/the-board/keys/api/aes_key', 'r') as f:
         lines = f.readlines()
     key = base64.b64decode(lines[0])
     nonce = get_random_bytes(12)
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     ciphertext, tag = cipher.encrypt_and_digest(message.encode('utf-8'))
-    return base64.b64encode(ciphertext), base64.b64encode(nonce)
+    return base64.b64encode(ciphertext).decode('utf-8'), base64.b64encode(nonce).decode('utf-8')
 
 
 def decrypt_message(ciphertext, nonce):
@@ -132,8 +143,10 @@ def decrypt_message(ciphertext, nonce):
     :return The decrypted message
     :rtype: str
     """
-    with open('/opt/theboard/secrets/aes_key', 'rb') as f:
+    with open('/opt/the-board/keys/api/aes_key', 'r') as f:
         lines = f.readlines()
     key = base64.b64decode(lines[0])
-    cipher = AES.new(key, AES.MODE_GCM, nonce=base64.b64decode(nonce))
-    return cipher.decrypt(base64.b64decode(ciphertext)).decode('utf-8')
+    ciphertext_bytes = base64.b64decode(ciphertext)
+    nonce_bytes = base64.b64decode(nonce)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=base64.b64decode(nonce_bytes))
+    return cipher.decrypt(ciphertext_bytes).decode('utf-8')

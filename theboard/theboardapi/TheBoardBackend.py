@@ -2,17 +2,19 @@ import json
 
 import requests
 
-from .crypto import generate_member, get_ecc_publicKey, validate_signature, sign_message, decrypt_message
+from .crypto import generate_member, get_ecc_public_key, validate_signature, sign_message, decrypt_message, \
+    get_rsa_public_key
 from .exceptions.ScreenNameInUse import ScreenNameInUse
 from .exceptions.MemberNotFound import MemberNotFound
 from .exceptions.InvalidPassword import InvalidPassword
+from .exceptions.SessionIdMismatch import SessionIdMismatch
 from .models import TheBoardMember
 
 
 class TheBoardBackend:
     """ Encapsulates the back end API methods for accessing the board enclave """
 
-    back_end_host = 'http://ec2-54-156-226-233.compute-1.amazonaws.com:8446'
+    back_end_host = 'http://ec2-54-156-226-233.compute-1.amazonaws.com:8446/enclave'
 
     def register(self, screen_name):
         """
@@ -27,10 +29,15 @@ class TheBoardBackend:
         :raises Exception: If there is a problem registering the screen_name
         """
         member, passphrase = generate_member(screen_name)
-        public_key_pem = get_ecc_publicKey(member.signing_key, member.password)
+        signing_public_key_pem = get_ecc_public_key(member.signing_key, passphrase)
+        encryption_public_key_pem = get_rsa_public_key(member.encryption_key, passphrase)
 
         url = f'{self.back_end_host}/register'
-        initiate_registration = {"screenName": f"{screen_name}", 'signingKey': f"{public_key_pem}"}
+        initiate_registration = {
+            "screenName": f"{screen_name}",
+            'signingPublicKey': f"{signing_public_key_pem}",
+            'encryptionPublicKey': f"{encryption_public_key_pem}",
+        }
         # Send post request
         response = requests.post(url, json=initiate_registration)
         # Check for HTTP errors
@@ -38,25 +45,26 @@ class TheBoardBackend:
         # Decode response
         registered = response.json()
         # Validate the message signature, will raise InvalidSignature on failure
-        server_signing_key_pem = registered['signingPublicKey']
-        fields = [
-            registered["publicId"],
-            registered['enclaveKey'],
-            registered['signingPublicKey'],
-            registered['status']
-        ]
-        validate_signature(server_signing_key_pem, fields, registered['signature'])
-        if not registered['success']:
-            if registered['status'] == "Screen exists":
-                raise ScreenNameInUse("Screen name in use")
-            else:
-                raise Exception(registered['status'])
-        else:
+        print(registered)
+        if registered['success']:
+            server_signing_key_pem = registered['signingPublicKey']
+            fields = [
+                registered["publicId"],
+                registered['enclaveKey'],
+                registered['signingPublicKey'],
+                registered['status']
+            ]
+            validate_signature(server_signing_key_pem, fields, registered['signature'])
             member.public_id = registered['publicId']
             member.enclave_key = registered['enclaveKey']
             member.server_signing_key = server_signing_key_pem
             member.save()
             return passphrase
+        else:
+            if registered['status'] == "Screen name exists":
+                raise ScreenNameInUse("Screen name in use")
+            else:
+                raise Exception(registered['status'])
 
     def login(self, screen_name, password):
         """
@@ -135,7 +143,7 @@ class TheBoardBackend:
         fields = [logged_out['sessionId']]
         validate_signature(member.server_signing_key, fields, logged_out['signature'])
         if logged_out['sessionId'] != session_id:
-            raise Exception("Session ID mismatch")
+            raise SessionIdMismatch("Session ID mismatch")
 
-        return {'session_id': session_id}
+        return {'sessionId': session_id}
 
