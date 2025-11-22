@@ -7,6 +7,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from theboardapi.exceptions.InvalidSignature import InvalidSignature
 
+def generate_ephemeral_key():
+    return ec.generate_private_key(ec.SECP256R1(), default_backend())
 
 def validate_signature(server_signing_key_pem, fields, signature):
     """ Validate the message signature """
