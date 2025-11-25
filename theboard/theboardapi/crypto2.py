@@ -1,9 +1,11 @@
 import base64
 import hashlib
+import os
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from theboardapi.exceptions.InvalidSignature import InvalidSignature
 
