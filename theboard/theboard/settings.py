@@ -80,7 +80,7 @@ DATABASES = {
         'NAME': 'theboard',
         'USER': 'theboard',
         'PASSWORD': 'L8bNmAANg8adtAQtCSbx',
-        'HOST': 'the-board-pg.cluster-choy9hztxz4m.us-east-1.rds.amazonaws.com',
+        'HOST': 'ec2-54-156-226-233.compute-1.amazonaws.com',
         'PORT': '',
     }
 }
