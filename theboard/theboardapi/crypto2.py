@@ -9,8 +9,21 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from theboardapi.exceptions.InvalidSignature import InvalidSignature
 
+
 def generate_ephemeral_key():
-    return ec.generate_private_key(ec.SECP256R1(), default_backend())
+    ec_private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+    private_key_pem = ec_private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    ec_public_key = ec_private_key.public_key()
+    public_key_pem = ec_public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return ec_private_key, private_key_pem, public_key_pem
+
 
 def validate_signature(server_signing_key_pem, fields, signature):
     """ Validate the message signature """
@@ -36,7 +49,8 @@ def validate_signature(server_signing_key_pem, fields, signature):
 def get_ecdh_shared_key(api_private_key, board_public_key):
     """ Get ECDH shared secret. Shared key is sha256 hash of shared secret """
     shared = api_private_key.exchange(ec.ECDH(), board_public_key)
-    return hashlib.sha256(shared.encode('utf-8')).digest()
+    return hashlib.sha256(shared).digest()
+
 
 def encrypt_message(cleartext, secret):
     """ Encrypt cleartext message using AES-GCM. Attach IV to start of message
@@ -50,6 +64,7 @@ def encrypt_message(cleartext, secret):
     encrypted = nonce + ciphertext
     return base64.b64encode(encrypted).decode('UTF-8')
 
+
 def decrypt_message(ciphertext, secret):
     """ Decrypt bae64 encoded text """
     bytes = base64.b64decode(ciphertext)
@@ -57,3 +72,9 @@ def decrypt_message(ciphertext, secret):
     ciphertext_bytes = bytes[12:]
     aesgcm = AESGCM(secret)
     return aesgcm.decrypt(ciphertext_bytes, nonce)
+
+
+def import_public_key(public_key_pem):
+    """ Import public key from PEM format string """
+    return serialization.load_pem_public_key(public_key_pem)
+
