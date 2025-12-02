@@ -1,15 +1,13 @@
 import base64
-import json
-import requests
 import datetime
 
-from .crypto import generate_member, get_ecc_public_key, sign_message, decrypt_message, \
-    get_rsa_public_key
+import requests
+
 from .crypto2 import validate_signature, generate_ephemeral_key, import_public_key, \
-    get_ecdh_shared_key
-from .exceptions.ScreenNameInUse import ScreenNameInUse
-from .exceptions.MemberNotFound import MemberNotFound
+    get_ecdh_shared_key, decrypt_message, generate_member, get_public_key, sign_message
 from .exceptions.InvalidPassword import InvalidPassword
+from .exceptions.MemberNotFound import MemberNotFound
+from .exceptions.ScreenNameInUse import ScreenNameInUse
 from .exceptions.SessionIdMismatch import SessionIdMismatch
 from .models import TheBoardMember, SessionContext
 
@@ -31,9 +29,13 @@ class TheBoardBackend:
         :raises ScreenNameInUse: If the screen_name is already registered
         :raises Exception: If there is a problem registering the screen_name
         """
+        member = TheBoardMember.objects.get(pk=screen_name)
+        if member:
+            raise ScreenNameInUse("Screen name in use")
+
         member, passphrase = generate_member(screen_name)
-        signing_public_key_pem = get_ecc_public_key(member.signing_key, passphrase)
-        encryption_public_key_pem = get_rsa_public_key(member.encryption_key, passphrase)
+        signing_public_key_pem = get_public_key(member.signing_key, passphrase)
+        encryption_public_key_pem = get_public_key(member.encryption_key, passphrase)
 
         url = f'{self.back_end_host}/register'
         initiate_registration = {
@@ -53,21 +55,20 @@ class TheBoardBackend:
             server_signing_key_pem = registered['signingPublicKey']
             fields = [
                 registered["publicId"],
+                registered["privateId"],
                 registered['enclaveKey'],
                 registered['signingPublicKey'],
                 registered['status']
             ]
             validate_signature(server_signing_key_pem, fields, registered['signature'])
             member.public_id = registered['publicId']
+            member.private_id = registered['privateId']
             member.enclave_key = registered['enclaveKey']
             member.server_signing_key = server_signing_key_pem
             member.save()
             return passphrase
         else:
-            if registered['status'] == "Screen name exists":
-                raise ScreenNameInUse("Screen name in use")
-            else:
-                raise Exception(registered['status'])
+            raise Exception(registered['status'])
 
     def login(self, screen_name, password):
         """
@@ -83,9 +84,7 @@ class TheBoardBackend:
         member = TheBoardMember.objects.get(pk=screen_name)
         if not member:
             raise MemberNotFound(screen_name)
-        json_string = member.passphrase
-        encrypted_passphrase = json.loads(json_string)
-        passphrase = decrypt_message(encrypted_passphrase['ciphertext'], encrypted_passphrase['nonce'])
+        passphrase = decrypt_message(member.passphrase)
         if passphrase != password:
             raise InvalidPassword()
 

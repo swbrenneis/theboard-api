@@ -1,13 +1,15 @@
 import base64
 import hashlib
-import os
+import random
+import string
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from theboardapi.exceptions.InvalidSignature import InvalidSignature
+from theboardapi.models import TheBoardMember
 
 
 def generate_ephemeral_key():
@@ -23,6 +25,79 @@ def generate_ephemeral_key():
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
     return ec_private_key, private_key_pem, public_key_pem
+
+def generate_signing_key(passphrase):
+    private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.BestAvailableEncryption(passphrase.encode('UTF-8')),
+    )
+
+def generate_encryption_key(passphrase):
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+    )
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.BestAvailableEncryption(passphrase.encode('UTF-8')),
+    )
+
+def get_public_key(pem, passphrase):
+    """
+    Recovers RSA or ECDSA public key form PEM-encoded private key.
+    The library detects the key type
+    """
+    private_key = serialization.load_pem_private_key(
+        pem.encode('utf-8'),
+        password=passphrase.encode('UTF-8'),
+    )
+    public_key = private_key.public_key()
+    return public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode('UTF-8')
+
+def generate_member(screen_name):
+    """ Generates the cryptographic components needed to access the board enclave """
+    member = TheBoardMember()
+    member.screen_name = screen_name
+
+    passphrase = generate_passphrase()
+    member.passphrase = encrypt_message(passphrase)
+
+    signing_key = generate_signing_key(passphrase)
+    member.signing_key = signing_key
+
+    encryption_key = generate_encryption_key(passphrase)
+    member.encryption_key = encryption_key
+    return member, passphrase
+
+
+def sign_message(private_key_pem, passphrase, fields):
+    """
+    Signs the given fields using the given private_key_pem and passphrase
+    :param private_key_pem: PEM encoded ECC private key
+    :type private_key_pem: str
+    :param passphrase: The passphrase for the private key
+    :type passphrase: str
+    :param fields: List of fields to sign
+    :type fields: list
+    :return The base 64 encoded signature
+    :rtype: str
+    """
+    private_key = serialization.load_pem_private_key(
+        private_key_pem.encode('utf-8'),
+        password=passphrase.encode('UTF-8'),
+    )
+    digest = hashlib.sha256()
+    for field in fields:
+        digest.update(field.encode('utf-8'))
+    hash_bytes = digest.digest()
+    signature = private_key.sign(hash_bytes, ec.ECDSA(hashes.SHA256()))
+    return base64.b64encode(signature).decode('UTF-8')
 
 
 def validate_signature(server_signing_key_pem, fields, signature):
@@ -52,29 +127,45 @@ def get_ecdh_shared_key(api_private_key, board_public_key):
     return hashlib.sha256(shared).digest()
 
 
-def encrypt_message(cleartext, secret):
+def encrypt_message(cleartext, secret=None):
     """ Encrypt cleartext message using AES-GCM. Attach IV to start of message
     :param cleartext: cleartext message
-    :param secret: secret key
+    :param secret: optional secret key
     :return: encrypted cleartext message base64 encoded
     """
+    if not secret:
+        # Read the key from the board master key file
+        with open('/opt/the-board/keys/api/aes_key', 'r') as f:
+            lines = f.readlines()
+        secret = base64.b64decode(lines[0])
+
     aesgcm = AESGCM(secret)
-    nonce = os.urandom(12)
+    nonce = random.randbytes(12)
     ciphertext = aesgcm.encrypt(cleartext, nonce)
     encrypted = nonce + ciphertext
     return base64.b64encode(encrypted).decode('UTF-8')
 
 
-def decrypt_message(ciphertext, secret):
+def decrypt_message(ciphertext, secret=None):
     """ Decrypt bae64 encoded text """
-    bytes = base64.b64decode(ciphertext)
-    nonce = bytes[0:12]
-    ciphertext_bytes = bytes[12:]
+    if not secret:
+        # Read the key from the board master key file
+        with open('/opt/the-board/keys/api/aes_key', 'r') as f:
+            lines = f.readlines()
+        secret = base64.b64decode(lines[0])
+
+    decoded_bytes = base64.b64decode(ciphertext)
+    nonce = decoded_bytes[0:12]
+    ciphertext_bytes = decoded_bytes[12:]
     aesgcm = AESGCM(secret)
-    return aesgcm.decrypt(ciphertext_bytes, nonce)
+    return aesgcm.decrypt(ciphertext_bytes, nonce, associated_data=None)
 
 
 def import_public_key(public_key_pem):
     """ Import public key from PEM format string """
     return serialization.load_pem_public_key(public_key_pem)
 
+
+def generate_passphrase(length=20):
+    chars = string.ascii_letters + string.digits + ".,!^*"
+    return ''.join(random.choice(chars) for _ in range(length))
