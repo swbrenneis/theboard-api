@@ -1,11 +1,12 @@
 import json
 
 from django.http import JsonResponse, HttpResponseBadRequest
+
 from .TheBoardBackend import TheBoardBackend
-from .exceptions.InvalidPassword import InvalidPassword
 from .exceptions.MemberNotFound import MemberNotFound
 from .exceptions.ScreenNameInUse import ScreenNameInUse
 from .exceptions.SessionIdMismatch import SessionIdMismatch
+from .models import TheBoardMember
 
 
 def register(request, screen_name):
@@ -17,6 +18,8 @@ def register(request, screen_name):
         data = {'registered': False, 'reason': 'Screen name in use'}
     return JsonResponse(data)
 
+def do_handshake(backend, the_board_member):
+    backend.do_handshake(the_board_member.public_id)
 
 def login(request):
     if request.method != 'POST':
@@ -32,6 +35,17 @@ def login(request):
     password = data['password']
 
     try:
+        the_board_member = TheBoardMember.objects.get(screen_name=screen_name)
+    except TheBoardMember.DoesNotExist:
+        return HttpResponseBadRequest("Invalid screen name")
+    if password != the_board_member.passphrase:
+        return HttpResponseBadRequest("Invalid password")
+
+    session_context = backend.do_handshake(the_board_member)
+    print(json.dumps(session_context, indent=2))
+
+    """
+    try:
         data = backend.login(screen_name, password)
     except MemberNotFound:
         print(f'Member {screen_name } not found')
@@ -40,6 +54,7 @@ def login(request):
         print(f'Invalid password for {screen_name}')
         data = {'authenticated': False, 'reason': 'Invalid password'}
     return JsonResponse(data)
+    """
 
 
 def logout(request):
