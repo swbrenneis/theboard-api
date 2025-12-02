@@ -1,15 +1,17 @@
+import base64
 import json
-
 import requests
+import datetime
 
 from .crypto import generate_member, get_ecc_public_key, sign_message, decrypt_message, \
     get_rsa_public_key
-from .crypto2 import validate_signature
+from .crypto2 import validate_signature, generate_ephemeral_key, import_public_key, \
+    get_ecdh_shared_key
 from .exceptions.ScreenNameInUse import ScreenNameInUse
 from .exceptions.MemberNotFound import MemberNotFound
 from .exceptions.InvalidPassword import InvalidPassword
 from .exceptions.SessionIdMismatch import SessionIdMismatch
-from .models import TheBoardMember
+from .models import TheBoardMember, SessionContext
 
 
 class TheBoardBackend:
@@ -127,7 +129,7 @@ class TheBoardBackend:
         :raises MemberNotFound: If the member object cannot be found using the screen name
         :raises Exception: If the session ID provided does not match the session ID from the back end
         """
-        member = TheBoardMember.objects.get(pk=screen_name)
+        member = TheBoardMember.objects.get(screen_name=screen_name)
         if not member:
             raise MemberNotFound(screen_name)
 
@@ -148,3 +150,40 @@ class TheBoardBackend:
 
         return {'sessionId': session_id}
 
+
+    def do_handshake(self, the_board_member):
+        """
+        Perform the ECDH handshake. Pass an EC public key to the server and then use
+        the local EC private key and the server public key to generate the shared secret.
+        The session key is the SHA 256
+        """
+        ec_private_key, private_key_pem, public_key_pem = generate_ephemeral_key()
+
+        handshake_request = {'ephemeralPublicKey': public_key_pem,}
+        url = f'{self.back_end_host}/handshake'
+
+        response = requests.post(url, json=handshake_request)
+        # Raise exception on HTTP error
+        response.raise_for_status()
+
+        handshake_response = response.json()
+
+        if not handshake_response['handshakeComplete']:
+            return None
+
+        session_id = handshake_response['sessionId']
+        server_ephemeral_key_pem = handshake_response['ephemeralPublicKey']
+
+        try:
+            session_context = SessionContext.objects.get(screen_name=the_board_member.screen_name)
+        except SessionContext.DoesNotExist:
+            session_context = SessionContext.objects.create(screen_name=the_board_member.screen_name)
+
+        session_context.session_id = session_id
+        server_public_key = import_public_key(server_ephemeral_key_pem)
+        shared_key = get_ecdh_shared_key(ec_private_key, server_public_key)
+        session_context.session_key = base64.b64encode(shared_key)
+        session_context.ephemeral_key = private_key_pem
+        session_context.timestamp = datetime.datetime.now()
+        session_context.save()
+        return session_context
