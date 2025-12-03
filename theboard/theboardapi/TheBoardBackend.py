@@ -1,11 +1,13 @@
 import base64
 import datetime
+import hashlib
 
 import requests
 
 from .crypto2 import validate_signature, generate_ephemeral_key, import_public_key, \
     get_ecdh_shared_key, decrypt_message, generate_member, get_public_key, sign_message
 from .exceptions.InvalidPassword import InvalidPassword
+from .exceptions.InvalidSignature import InvalidSignature
 from .exceptions.MemberNotFound import MemberNotFound
 from .exceptions.ScreenNameInUse import ScreenNameInUse
 from .exceptions.SessionIdMismatch import SessionIdMismatch
@@ -29,9 +31,11 @@ class TheBoardBackend:
         :raises ScreenNameInUse: If the screen_name is already registered
         :raises Exception: If there is a problem registering the screen_name
         """
-        member = TheBoardMember.objects.get(pk=screen_name)
-        if member:
+        try:
+            member = TheBoardMember.objects.get(pk=screen_name)
             raise ScreenNameInUse("Screen name in use")
+        except TheBoardMember.DoesNotExist:
+            print(f'Screen name {screen_name} is available')
 
         member, passphrase = generate_member(screen_name)
         signing_public_key_pem = get_public_key(member.signing_key, passphrase)
@@ -84,8 +88,12 @@ class TheBoardBackend:
         member = TheBoardMember.objects.get(pk=screen_name)
         if not member:
             raise MemberNotFound(screen_name)
-        passphrase = decrypt_message(member.passphrase)
-        if passphrase != password:
+
+        digest = hashlib.sha256()
+        digest.update(password.encode('utf-8'))
+        hashed_password = digest.digest()
+        encoded_password = base64.b64encode(hashed_password).decode('utf-8')
+        if encoded_password != member.passphrase:
             raise InvalidPassword()
 
         # Generate the signature
@@ -106,9 +114,14 @@ class TheBoardBackend:
         authenticated = response.json()
 
         # Validate the signature
-        fields = [authenticated['sessionId'], authenticated['sessionKey']]
-        # Raises exception on invalid signature
-        validate_signature(member.server_signing_key, fields, authenticated['signature'])
+        fields = [authenticated['authenticated']]
+        try:
+            # Raises exception on invalid signature
+            validate_signature(member.server_signing_key, fields, authenticated['signature'])
+        except InvalidSignature:
+            print('Invalid signature on login response')
+            return {'authenticated': False}
+
         if not authenticated['success']:
             return {'authenticated': False}
         else:
@@ -158,7 +171,7 @@ class TheBoardBackend:
         """
         ec_private_key, private_key_pem, public_key_pem = generate_ephemeral_key()
 
-        handshake_request = {'ephemeralPublicKey': public_key_pem,}
+        handshake_request = {"ephemeralPublicKey": f"{public_key_pem}"}
         url = f'{self.back_end_host}/handshake'
 
         response = requests.post(url, json=handshake_request)
@@ -166,6 +179,7 @@ class TheBoardBackend:
         response.raise_for_status()
 
         handshake_response = response.json()
+        # print(f'handshake response: {handshake_response}')
 
         if not handshake_response['handshakeComplete']:
             return None

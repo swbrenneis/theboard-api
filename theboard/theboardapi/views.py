@@ -1,8 +1,12 @@
+import base64
+import hashlib
 import json
 
-from django.http import JsonResponse, HttpResponseBadRequest
+from django.http import JsonResponse, HttpResponseBadRequest, HttpResponse
+from django.views.decorators.csrf import ensure_csrf_cookie
 
 from .TheBoardBackend import TheBoardBackend
+from .exceptions.InvalidPassword import InvalidPassword
 from .exceptions.MemberNotFound import MemberNotFound
 from .exceptions.ScreenNameInUse import ScreenNameInUse
 from .exceptions.SessionIdMismatch import SessionIdMismatch
@@ -21,6 +25,13 @@ def register(request, screen_name):
 def do_handshake(backend, the_board_member):
     backend.do_handshake(the_board_member.public_id)
 
+@ensure_csrf_cookie
+def init(request):
+    if request.method != 'GET':
+        return HttpResponseBadRequest("Method not allowed")
+    return JsonResponse({"status": "ok"})
+
+
 def login(request):
     if request.method != 'POST':
         return HttpResponseBadRequest("Method not allowed")
@@ -28,6 +39,7 @@ def login(request):
     try:
         data = json.loads(request.body)
     except json.JSONDecodeError:
+        print(f'Invalid request JSON')
         return HttpResponseBadRequest("Invalid JSON")
 
     backend = TheBoardBackend()
@@ -38,13 +50,10 @@ def login(request):
         the_board_member = TheBoardMember.objects.get(screen_name=screen_name)
     except TheBoardMember.DoesNotExist:
         return HttpResponseBadRequest("Invalid screen name")
-    if password != the_board_member.passphrase:
-        return HttpResponseBadRequest("Invalid password")
 
     session_context = backend.do_handshake(the_board_member)
-    print(json.dumps(session_context, indent=2))
+    print(session_context)
 
-    """
     try:
         data = backend.login(screen_name, password)
     except MemberNotFound:
@@ -54,7 +63,6 @@ def login(request):
         print(f'Invalid password for {screen_name}')
         data = {'authenticated': False, 'reason': 'Invalid password'}
     return JsonResponse(data)
-    """
 
 
 def logout(request):
