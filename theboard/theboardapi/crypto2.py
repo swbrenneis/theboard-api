@@ -2,10 +2,12 @@ import base64
 import hashlib
 import random
 import string
+import os
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from theboardapi.exceptions.InvalidSignature import InvalidSignature
@@ -150,8 +152,11 @@ def validate_signature(server_signing_key_pem, fields, signature):
         raise InvalidSignature
 
 def get_ecdh_shared_key(api_private_key, board_public_key):
-    """ Get ECDH shared secret. Shared key is sha256 hash of shared secret """
+    """
+    Get ECDH shared secret. Shared key is sha256 hash of shared secret
+    """
     shared = api_private_key.exchange(ec.ECDH(), board_public_key)
+    print(f'Key agreement bytes: {shared.hex()}')
     return hashlib.sha256(shared).digest()
 
 
@@ -160,8 +165,9 @@ def encrypt_message(cleartext, secret=None):
     :param cleartext: cleartext message
     :type cleartext: str
     :param secret: optional secret key
-    :type secret: bytearray
+    :type secret: bytes
     :return: encrypted cleartext message base64 encoded
+    :rtype: str
     """
     if not secret:
         # Read the key from the board master key file
@@ -169,10 +175,18 @@ def encrypt_message(cleartext, secret=None):
             lines = f.readlines()
         secret = base64.b64decode(lines[0])
 
-    aesgcm = AESGCM(secret)
-    nonce = random.randbytes(12)
-    ciphertext = aesgcm.encrypt(cleartext.encode('UTF-8'), nonce, associated_data=None)
-    encrypted = nonce + ciphertext
+    iv = os.urandom(12)
+    encryptor = Cipher(
+        algorithm=algorithms.AES(secret),
+        mode=modes.GCM(iv),
+    ).encryptor()
+    ciphertext = encryptor.update(cleartext.encode('UTF-8')) + encryptor.finalize()
+    tag = encryptor.tag
+    print(f'Secret: {secret.hex()}')
+    print(f'IV: {iv.hex()}')
+    print(f'Ciphertext: {ciphertext.hex()}')
+    print(f'Tag: {tag.hex()}')
+    encrypted = iv + ciphertext + tag
     return base64.b64encode(encrypted).decode('UTF-8')
 
 
@@ -196,7 +210,7 @@ def decrypt_message(ciphertext, secret=None):
     nonce = decoded_bytes[0:12]
     ciphertext_bytes = decoded_bytes[12:]
     aesgcm = AESGCM(secret)
-    return aesgcm.decrypt(ciphertext_bytes, nonce, associated_data=None)
+    return aesgcm.decrypt(nonce, ciphertext_bytes, associated_data=bytearray())
 
 
 def import_public_key(public_key_pem):

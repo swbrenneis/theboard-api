@@ -1,11 +1,12 @@
 import base64
 import datetime
 import hashlib
+import json
 
 import requests
 
 from .crypto2 import validate_signature, generate_ephemeral_key, import_public_key, \
-    get_ecdh_shared_key, decrypt_message, generate_member, get_public_key, sign_message
+    get_ecdh_shared_key, decrypt_message, generate_member, get_public_key, sign_message, encrypt_message
 from .exceptions.InvalidPassword import InvalidPassword
 from .exceptions.InvalidSignature import InvalidSignature
 from .exceptions.MemberNotFound import MemberNotFound
@@ -74,7 +75,7 @@ class TheBoardBackend:
         else:
             raise Exception(registered['status'])
 
-    def login(self, screen_name, password):
+    def login(self, screen_name, password, session_id):
         """
         Log in using the given screen_name and password.
         :param screen_name: The screen_name to login.
@@ -85,9 +86,16 @@ class TheBoardBackend:
         :rtype: dict
         :raises MemberNotFound: If the member object cannot be found using the screen name
         """
-        member = TheBoardMember.objects.get(pk=screen_name)
-        if not member:
+        try:
+            member = TheBoardMember.objects.get(screen_name=screen_name)
+        except TheBoardMember.DoesNotExist:
             raise MemberNotFound(screen_name)
+
+        try:
+            session_context = SessionContext.objects.get(session_id=session_id)
+        except SessionContext.DoesNotExist:
+            print(f'Invalid session: {session_id}')
+            return {"authenticated": False}
 
         digest = hashlib.sha256()
         digest.update(password.encode('utf-8'))
@@ -96,15 +104,17 @@ class TheBoardBackend:
         if encoded_password != member.passphrase:
             raise InvalidPassword()
 
+        authentication_values = {"privateId": member.private_id, "enclaveKey": member.enclave_key,}
+        ciphertext = encrypt_message(json.dumps(authentication_values), base64.b64decode(session_context.session_key))
+
         # Generate the signature
         fields = [
-            member.public_id,
-            member.enclave_key,
+            ciphertext,
         ]
         signature = sign_message(member.signing_key, password, fields)
 
         # Send the post request
-        initiate_authentication = {"publicId": member.public_id, "enclaveKey": member.enclave_key,
+        initiate_authentication = {"sessionId": session_id, "ciphertext": ciphertext,
                                     "signature": signature}
         url = f'{self.back_end_host}/authenticate'
         response = requests.post(url, json=initiate_authentication)
@@ -114,7 +124,7 @@ class TheBoardBackend:
         authenticated = response.json()
 
         # Validate the signature
-        fields = [authenticated['authenticated']]
+        fields = [authenticated['timestamp']]
         try:
             # Raises exception on invalid signature
             validate_signature(member.server_signing_key, fields, authenticated['signature'])
@@ -122,7 +132,7 @@ class TheBoardBackend:
             print('Invalid signature on login response')
             return {'authenticated': False}
 
-        if not authenticated['success']:
+        if not authenticated['authenticated']:
             return {'authenticated': False}
         else:
             return {'authenticated': True, 'session_id': authenticated['sessionId'],
@@ -168,10 +178,14 @@ class TheBoardBackend:
         Perform the ECDH handshake. Pass an EC public key to the server and then use
         the local EC private key and the server public key to generate the shared secret.
         The session key is the SHA 256
+        :param the_board_member: The TheBoardMember object to use to authenticate
+        :type the_board_member: TheBoardMember
         """
         ec_private_key, private_key_pem, public_key_pem = generate_ephemeral_key()
 
-        handshake_request = {"ephemeralPublicKey": f"{public_key_pem}"}
+        print(f'Ephemeral public key pem: {public_key_pem}')
+
+        handshake_request = {"ephemeralPublicKey": public_key_pem}
         url = f'{self.back_end_host}/handshake'
 
         response = requests.post(url, json=handshake_request)
@@ -186,6 +200,7 @@ class TheBoardBackend:
 
         session_id = handshake_response['sessionId']
         server_ephemeral_key_pem = handshake_response['ephemeralPublicKey']
+        print(f'Server public key pem: {server_ephemeral_key_pem}')
 
         try:
             session_context = SessionContext.objects.get(screen_name=the_board_member.screen_name)
@@ -195,7 +210,9 @@ class TheBoardBackend:
         session_context.session_id = session_id
         server_public_key = import_public_key(server_ephemeral_key_pem)
         shared_key = get_ecdh_shared_key(ec_private_key, server_public_key)
-        session_context.session_key = base64.b64encode(shared_key)
+        print(f'Shared key: {shared_key.hex()}')
+        print(f'Shared key length: {len(shared_key)}')
+        session_context.session_key = base64.b64encode(shared_key).decode('utf-8')
         session_context.ephemeral_key = private_key_pem
         session_context.timestamp = datetime.datetime.now()
         session_context.save()

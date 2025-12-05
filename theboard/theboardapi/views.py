@@ -52,10 +52,9 @@ def login(request):
         return HttpResponseBadRequest("Invalid screen name")
 
     session_context = backend.do_handshake(the_board_member)
-    print(session_context)
 
     try:
-        data = backend.login(screen_name, password)
+        data = backend.login(screen_name, password, session_context.session_id)
     except MemberNotFound:
         print(f'Member {screen_name } not found')
         data = {'authenticated': False, 'reason': 'Member not found'}
